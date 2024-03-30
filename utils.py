@@ -25,8 +25,13 @@ class Item(object):
         return 'Item(name={}, start={}, end={}, velocity={}, pitch={})'.format(
             self.name, self.start, self.end, self.velocity, self.pitch)
 
+
+CACHE = {}
+
 # read notes and tempo changes from midi (assume there is only one track) -> assume there are multiple tracks
 def read_items(file_path):
+    if file_path in CACHE:
+        return CACHE[file_path]
     midi_obj = miditoolkit.midi.parser.MidiFile(file_path)
     # note
     all_note_items = [[] for _ in range(len(midi_obj.instruments))]
@@ -72,6 +77,8 @@ def read_items(file_path):
                 velocity=None,
                 pitch=output[-1].pitch))
     tempo_items = output
+
+    CACHE[file_path] = all_note_items, tempo_items
     return all_note_items, tempo_items
 
 # quantize items

@@ -1,0 +1,6 @@
+
+/dataset
+dataset.zip
+*.lprof
+*.pyc
+trained-model/loss.ckpt

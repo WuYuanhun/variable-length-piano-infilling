@@ -6,6 +6,8 @@ import datetime
 import os
 import copy
 
+import tqdm
+
 from transformers import XLNetTokenizer, XLNetModel, XLNetConfig, AdamW
 
 import torch
@@ -32,6 +34,7 @@ parser.add_argument('--n-step-bars', type=int, default=8, help='how many bars to
 parser.add_argument('--max-seq-len', type=int, default=512, help='all sequences are padded to `max_seq_len`')
 parser.add_argument('--train-epochs', type=int, default=2000, help='number of training epochs')
 parser.add_argument('--init-lr', type=float, default=1e-4, help='initial learning rate')
+parser.add_argument('--train_epochs', type=int, default=10, help='number of training epochs')
 
 # for prediction phase
 parser.add_argument('--test-data-file', type=str, default='worded_data.pickle')
@@ -136,7 +139,7 @@ class Embeddings(nn.Module):
 class XLNetForPredictingMiddleNotes(torch.nn.Module):
     def __init__(self, xlnet_config, e2w, w2e, is_train=None):
         super(XLNetForPredictingMiddleNotes, self).__init__()
-        self.xlnet = XLNetModel(xlnet_config, is_train=is_train)
+        self.xlnet = XLNetModel(xlnet_config)
         self.xlnet_config = xlnet_config
         self.loss_func = nn.CrossEntropyLoss(reduction='none')
 
@@ -226,13 +229,16 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
             start_end[i][0] = np.nonzero(training_data[i, :, 1] == 6)[0][0]
             start_end[i][1] = np.nonzero(training_data[i, :, 1] == 9)[0][-1]
 
+
+        # training_data = training_data[:40]
+
         start_time = time.time()
         optimizer = AdamW(self.parameters(), lr=args.init_lr, weight_decay=0.01)
         num_batches = len(training_data) // args.batch_size
         for epoch in range(args.train_epochs):
             total_losses = 0
-            for train_iter in range(num_batches):
-                input_ids = torch.from_numpy(training_data[train_iter * args.batch_size : (train_iter + 1) * args.batch_size]).to(device)
+            for train_iter in tqdm.tqdm(range(num_batches)):
+                input_ids = torch.from_numpy(training_data[train_iter * args.batch_size : (train_iter + 1) * args.batch_size]).to(device).to(torch.long)
                 start_end_batch = start_end[train_iter * args.batch_size : (train_iter + 1) * args.batch_size]
 
                 # attn_mask: mask to avoid attending to <PAD> tokens
@@ -243,7 +249,8 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
                 valid_seq_lengths = [torch.nonzero(seq)[-1][0] + 1 for seq in attn_mask] # seq length without <PAD> tokens
                 target_starts = [np.random.randint(int(seq_len * (1 - args.target_max_percent))) for seq_len in valid_seq_lengths]
                 target_lens = [np.random.randint(int(seq_len * args.target_max_percent / 2), int(seq_len * args.target_max_percent)) for seq_len in valid_seq_lengths]
-
+                max_target_len = max(target_lens)
+            
                 # generate perm_mask
                 # 0: attend, 1: do not attend
                 perm_mask = torch.ones(args.batch_size, args.max_seq_len, args.max_seq_len).to(device)
@@ -254,7 +261,7 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
                         perm_mask[b, i, target_starts[b]:i] = 0
 
                 # target mapping: partial prediction
-                target_mapping = torch.zeros(args.batch_size, max(target_lens), args.max_seq_len).to(device)
+                target_mapping = torch.zeros(args.batch_size, max_target_len, args.max_seq_len).to(device)
                 for b in range(args.batch_size):
                     for i, j in enumerate(range(target_starts[b], target_starts[b]+target_lens[b])):
                         target_mapping[b, i, j] = 1
@@ -283,8 +290,8 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
 
 
                 # calculate losses
-                target = torch.zeros(args.batch_size, max(target_lens), len(self.e2w), dtype=torch.long).to(device)
-                loss_mask = torch.zeros(args.batch_size, max(target_lens))
+                target = torch.zeros(args.batch_size, max_target_len, len(self.e2w), device=device, dtype=torch.long)
+                loss_mask = torch.zeros(args.batch_size, max_target_len)
                 for b in range(args.batch_size):
                     target[b, :target_lens[b], [0, 3, 4, 5]] = input_ids[b, target_starts[b]:target_starts[b]+target_lens[b], [0, 3, 4, 5]]
 
@@ -307,8 +314,8 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
 
 
                 # acc
-                sys.stdout.write('{}/{} | Loss: {:06f} | {:04f}, {:04f}, {:04f}, {:04f}, {:04f}, {:04f}\r'.format(
-                    train_iter, num_batches, total_loss, *losses))
+                # print('{}/{} | Loss: {:06f} | {:04f}, {:04f}, {:04f}, {:04f}, {:04f}, {:04f}\r'.format(
+                #     train_iter, num_batches, total_loss, *losses))
                 losses = list(map(float, losses))
                 total_losses += total_loss.item()
 
@@ -448,15 +455,17 @@ class XLNetForPredictingMiddleNotes(torch.nn.Module):
         return cur_word
 
 
+def train_mode(e2w, w2):
+    model = XLNetForPredictingMiddleNotes(configuration, e2w, w2e, is_train=True).to(device)
+    training_data = prepare_data.prepare_data_for_training(args.data_file, is_train=True, e2w=e2w, w2e=w2e, n_step_bars=args.n_step_bars, max_len=args.max_seq_len)
+    model.train(training_data=training_data, n_epochs=args.train_epochs)
 
 if __name__ == '__main__':
     with open(args.dict_file, 'rb') as f:
         e2w, w2e = pickle.load(f)
 
     if args.train:
-        model = XLNetForPredictingMiddleNotes(configuration, e2w, w2e, is_train=True).to(device)
-        training_data = prepare_data.prepare_data_for_training(args.data_file, is_train=True, e2w=e2w, w2e=w2e, n_step_bars=args.n_step_bars, max_len=args.max_seq_len)
-        model.train(training_data=training_data, n_epochs=args.train_epochs)
+        train_mode(e2w, w2e)
     else:
         model = XLNetForPredictingMiddleNotes(configuration, e2w, w2e, is_train=False).to(device)
         test_data = prepare_data.prepare_data_for_training(args.data_file, is_train=False, e2w=e2w, w2e=w2e, n_step_bars=args.n_step_bars, max_len=args.max_seq_len)

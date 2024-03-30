@@ -357,6 +357,11 @@ def random_notes(bar_range, pos_range, pitch_range, duration_range, velocity_ran
 
     return words
 
+import tqdm
+import multiprocessing
+
+def cvtmidis_to_worded_data(midi_folder):
+    pass
 
 
 def convert_midis_to_worded_data(midi_folder, save_folder):
@@ -364,7 +369,7 @@ def convert_midis_to_worded_data(midi_folder, save_folder):
 
     midis = []
     for root, dirs, files in os.walk(midi_folder):
-        for f in files:
+        for f in tqdm.tqdm(files):
             if f[-4:] == '.mid':
                 try:
                     note_items, tempo_items = utils.read_items(os.path.join(root, f))
